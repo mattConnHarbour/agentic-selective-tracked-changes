@@ -38,7 +38,7 @@ button:disabled {
 .demo-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 32px;
   padding: 28px 36px;
   color: white;
@@ -73,12 +73,6 @@ button:disabled {
   gap: 10px;
 }
 
-.secondary-button {
-  border: 1px solid #91b6ff;
-  color: #dbe7ff;
-  background: transparent;
-}
-
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 350px;
@@ -105,15 +99,56 @@ button:disabled {
   border-bottom: 1px solid #e5e9f0;
 }
 
+.mode-control {
+  display: flex;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.mode-key {
+  display: flex;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 2px;
+  color: #667085;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.mode-selector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #667085;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.mode-selector select {
+  min-width: 126px;
+  border: 1px solid #c7d1df;
+  border-radius: 8px;
+  padding: 8px 32px 8px 11px;
+  color: #172033;
+  background: white;
+  font: inherit;
+  cursor: pointer;
+}
+
 .panel-heading span,
 .activity-note,
 .empty-state,
-.change-list small {
+.custom-change-bubble small {
   color: #68758a;
 }
 
-.human-editor > div:last-child {
+.human-editor > div:not(.panel-heading):not(.bubble-layer) {
   min-height: calc(70vh - 51px);
+}
+
+.human-editor {
+  position: relative;
 }
 
 .activity-panel {
@@ -132,18 +167,14 @@ button:disabled {
   background: transparent;
 }
 
-.change-list {
-  display: grid;
-  gap: 10px;
-  margin: 0;
-  padding: 0 16px;
-  list-style: none;
-}
-
-.change-list li {
-  padding: 13px;
-  border: 1px solid #e0e5ed;
-  border-radius: 9px;
+.bubble-layer {
+  position: absolute;
+  z-index: 5;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 340px;
+  pointer-events: none;
 }
 
 .change-title {
@@ -152,8 +183,32 @@ button:disabled {
   gap: 8px;
 }
 
-.change-list p {
-  margin: 9px 0;
+.custom-change-bubble {
+  position: absolute;
+  right: 16px;
+  left: 16px;
+  display: flex;
+  align-items: stretch;
+  flex-direction: column;
+  gap: 9px;
+  border: 1px solid #cbd7ea;
+  border-left: 4px solid #225bd6;
+  border-radius: 10px;
+  padding: 13px;
+  color: #18212f;
+  background: white;
+  box-shadow: 0 8px 22px rgb(38 50 73 / 14%);
+  text-align: left;
+  pointer-events: auto;
+}
+
+.custom-change-bubble:hover {
+  border-color: #91b6ff;
+  border-left-color: #225bd6;
+  background: #f8faff;
+}
+
+.bubble-excerpt {
   line-height: 1.4;
 }
 
@@ -227,22 +282,6 @@ button:disabled {
   background: transparent !important;
 }
 
-/* Review placeholders are hidden before first paint, which prevents a human
- * bubble from flashing while App.tsx resolves its author. The demo then
- * reveals only agent-authored bubbles. This intentionally hides ordinary
- * comment bubbles too; use a custom comments UI when those must remain. */
-.human-editor.hide-human-changes .comment-placeholder {
-  visibility: hidden !important;
-}
-
-.human-editor.hide-human-changes .comment-placeholder[data-track-change-author-email='agent@example.com'] {
-  visibility: visible !important;
-}
-
-.human-editor.hide-human-changes .comment-placeholder[data-track-change-author-email='human@example.com'] {
-  display: none !important;
-}
-
 @media (max-width: 900px) {
   .demo-header {
     align-items: flex-start;
@@ -255,5 +294,9 @@ button:disabled {
 
   .workspace {
     grid-template-columns: 1fr;
+  }
+
+  .bubble-layer {
+    width: min(300px, 42vw);
   }
 }

@@ -1,24 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SuperDocEditor, type SuperDocEditorCreateEvent, type SuperDocRef } from '@superdoc/react';
+import type { TrackChangeInfo } from 'superdoc/ui';
 import '@superdoc/react/style.css';
 
 const HUMAN = { name: 'Human Editor', email: 'human@example.com' };
 const AGENT = { name: 'Contract Review Agent', email: 'agent@example.com' };
 const MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+const HUMAN_UI = { comments: false } as const;
 
-type ChangeItem = {
-  id: string;
-  type: string;
-  author?: string;
-  authorEmail?: string;
-  date?: string;
-  excerpt?: string;
-};
+type ChangeItem = TrackChangeInfo;
+const isHumanChange = (change: ChangeItem) =>
+  change.authorEmail === HUMAN.email || change.author === HUMAN.name;
+const isAgentChange = (change: ChangeItem) => !isHumanChange(change);
 
 export default function App() {
   const humanRef = useRef<SuperDocRef>(null);
   const editorRef = useRef<SuperDocEditorCreateEvent['editor'] | null>(null);
   const agentFrameRef = useRef<HTMLIFrameElement>(null);
+  const bubbleLayerRef = useRef<HTMLDivElement>(null);
   const roomIdRef = useRef(`agentic-selective-track-changes-${crypto.randomUUID()}`);
   const [source, setSource] = useState<Blob | null>(null);
   const [humanReady, setHumanReady] = useState(false);
@@ -27,7 +26,14 @@ export default function App() {
   const [running, setRunning] = useState(false);
   const [hideHumanChanges, setHideHumanChanges] = useState(true);
   const [changes, setChanges] = useState<ChangeItem[]>([]);
+  const [bubblePositions, setBubblePositions] = useState<Record<string, number>>({});
+  const [bubbleGeometryReady, setBubbleGeometryReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const visibleChanges = useMemo(
+    () => (hideHumanChanges ? changes.filter((change) => !isHumanChange(change)) : changes),
+    [changes, hideHumanChanges],
+  );
 
   useEffect(() => {
     void fetch('/sample.docx')
@@ -88,12 +94,84 @@ export default function App() {
   }, [humanConnected, humanReady, refreshChanges, source]);
 
   useEffect(() => {
+    if (!humanReady) return;
+    const ui = humanRef.current?.getInstance()?.ui;
+    if (!ui) return;
+
+    return ui.trackChanges.observe((snapshot) => {
+      setChanges(
+        [...snapshot.items].sort(
+          (left, right) => new Date(right.date ?? 0).getTime() - new Date(left.date ?? 0).getTime(),
+        ),
+      );
+    });
+  }, [humanReady]);
+
+  const positionBubbles = useCallback(() => {
+    const layer = bubbleLayerRef.current;
+    const ui = humanRef.current?.getInstance()?.ui;
+    if (!layer || !ui) return;
+
+    const layerBounds = layer.getBoundingClientRect();
+    const paintedChanges = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        '.human-editor [data-track-change-id], .human-editor [data-track-change-preferred-target-id]',
+      ),
+    );
+    const anchored = visibleChanges.flatMap((change) => {
+      try {
+        const apiRects = ui.viewport.getRect({ target: change.address }).rects;
+        const paintedRects = paintedChanges
+          .filter((element) => {
+            const ids = element.dataset.trackChangeIds?.split(',') ?? [];
+            return (
+              element.dataset.trackChangeId === change.id ||
+              element.dataset.trackChangePreferredTargetId === change.id ||
+              ids.includes(change.id)
+            );
+          })
+          .map((element) => element.getBoundingClientRect());
+        const rect = [...apiRects, ...paintedRects].find(
+          (candidate) => candidate.bottom >= 0 && candidate.top <= window.innerHeight,
+        );
+        return rect ? [{ id: change.id, top: rect.top - layerBounds.top }] : [];
+      } catch {
+        return [];
+      }
+    });
+    const nextPositions = Object.fromEntries(
+      anchored.map(({ id, top }) => [id, top]),
+    );
+    setBubblePositions(nextPositions);
+    setBubbleGeometryReady(true);
+  }, [visibleChanges]);
+
+  useEffect(() => {
+    if (!humanReady) return;
+    const ui = humanRef.current?.getInstance()?.ui;
+    if (!ui) return;
+
+    const frame = window.requestAnimationFrame(positionBubbles);
+    const stopViewport = ui.viewport.observe(positionBubbles);
+    window.addEventListener('resize', positionBubbles);
+    window.addEventListener('scroll', positionBubbles, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      stopViewport();
+      window.removeEventListener('resize', positionBubbles);
+      window.removeEventListener('scroll', positionBubbles, true);
+    };
+  }, [humanReady, positionBubbles]);
+
+  useEffect(() => {
     const onAgentMessage = (event: MessageEvent) => {
       if (event.origin !== window.location.origin || event.data?.source !== 'superdoc-agent-demo') return;
       if (event.data.type === 'agent-ready') setAgentReady(true);
       if (event.data.type === 'agent-complete') {
         setRunning(false);
-        window.setTimeout(() => void refreshChanges(), 500);
+        [250, 750, 1500, 3000].forEach((delay) => {
+          window.setTimeout(() => void refreshChanges(), delay);
+        });
       }
       if (event.data.type === 'agent-error') {
         setRunning(false);
@@ -103,25 +181,6 @@ export default function App() {
     window.addEventListener('message', onAgentMessage);
     return () => window.removeEventListener('message', onAgentMessage);
   }, [refreshChanges]);
-
-  useEffect(() => {
-    const editorRoot = document.querySelector('.human-editor');
-    if (!editorRoot) return;
-
-    const changesById = new Map(changes.map((change) => [change.id, change]));
-    const tagTrackedChangeBubbles = () => {
-      editorRoot.querySelectorAll<HTMLElement>('.comment-placeholder[data-comment-thread-id]').forEach((bubble) => {
-        const change = changesById.get(bubble.dataset.commentThreadId ?? '');
-        if (change?.authorEmail) bubble.dataset.trackChangeAuthorEmail = change.authorEmail;
-        else delete bubble.dataset.trackChangeAuthorEmail;
-      });
-    };
-
-    tagTrackedChangeBubbles();
-    const observer = new MutationObserver(tagTrackedChangeBubbles);
-    observer.observe(editorRoot, { childList: true, subtree: true });
-    return () => observer.disconnect();
-  }, [changes]);
 
   const runAgent = async () => {
     setRunning(true);
@@ -137,30 +196,20 @@ export default function App() {
     );
   };
 
+  const focusChange = async (id: string) => {
+    const ui = humanRef.current?.getInstance()?.ui;
+    if (!ui || !ui.trackChanges.setActive(id)) return;
+    await ui.trackChanges.scrollTo(id);
+  };
+
   if (error && !source) return <p className="fatal">Could not start the demo: {error}</p>;
   if (!source) return <p className="loading">Loading sample document…</p>;
-
   return (
     <main className="app-shell">
       <header className="demo-header">
-        <div>
-          <p className="eyebrow">Agentic collaboration proof of concept</p>
-          <h1>Invisible human revisions, visible agent suggestions</h1>
-          <p className="subtitle">
-            Type in the document as {HUMAN.name}. Your revisions remain tracked but look like direct edits. Then ask the
-            dummy agent to insert a visibly tracked suggestion at the top of the document.
-          </p>
-        </div>
         <div className="header-actions">
-          <button
-            className="secondary-button"
-            onClick={() => setHideHumanChanges((hidden) => !hidden)}
-            type="button"
-          >
-            {hideHumanChanges ? 'Show human changes' : 'Hide human changes'}
-          </button>
           <button disabled={!agentReady || running} onClick={() => void runAgent()} type="button">
-            {running ? 'Agent is editing…' : 'Run dummy agent'}
+            {running ? 'Agent is editing…' : 'Run agent edit'}
           </button>
         </div>
       </header>
@@ -171,7 +220,23 @@ export default function App() {
         <div className={`editor-panel human-editor${hideHumanChanges ? ' hide-human-changes' : ''}`}>
           <div className="panel-heading">
             <strong>Shared document</strong>
-            <span>{humanReady ? 'Human connected' : 'Connecting…'}</span>
+            <div className="mode-control">
+              <div className="mode-key">
+                <span>editing = suggesting, user changes hidden, agent changes visible</span>
+                <span>suggesting = suggesting, user changes visible, agent changes visible</span>
+              </div>
+              <label className="mode-selector">
+                <span>Mode</span>
+                <select
+                  aria-label="Document display mode"
+                  onChange={(event) => setHideHumanChanges(event.target.value === 'editing')}
+                  value={hideHumanChanges ? 'editing' : 'suggesting'}
+                >
+                  <option value="editing">Editing</option>
+                  <option value="suggesting">Suggesting</option>
+                </select>
+              </label>
+            </div>
           </div>
           <SuperDocEditor
             documentMode="suggesting"
@@ -184,41 +249,49 @@ export default function App() {
               setError(payload.error instanceof Error ? payload.error.message : String(payload.error));
             }}
             ref={humanRef}
+            ui={HUMAN_UI}
             user={HUMAN}
           />
+          <div className="bubble-layer" ref={bubbleLayerRef}>
+            {visibleChanges.map((change, index) => {
+              const top = bubblePositions[change.id];
+              if (top === undefined && bubbleGeometryReady) return null;
+              const isAgent = isAgentChange(change);
+              return (
+                <button
+                  className="custom-change-bubble"
+                  key={change.id}
+                  onClick={() => void focusChange(change.id)}
+                  style={{ top: top ?? 132 + index * 132 }}
+                  type="button"
+                >
+                  <span className="change-title">
+                    <span className={isAgent ? 'badge agent' : 'badge human'}>{isAgent ? 'Agent' : 'Human'}</span>
+                    <strong>{change.author ?? 'Unknown author'}</strong>
+                  </span>
+                  <span className="bubble-excerpt">{change.excerpt || '(No text excerpt)'}</span>
+                  <small>
+                    {change.type} · {change.date ? new Date(change.date).toLocaleString() : 'No timestamp'}
+                  </small>
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         <aside className="activity-panel">
           <div className="panel-heading">
-            <strong>Tracked activity</strong>
+            <strong>Tracked changes</strong>
             <button className="text-button" onClick={() => void refreshChanges()} type="button">
               Refresh
             </button>
           </div>
-          <p className="activity-note">
-            Both kinds are stored. Human revision markup is currently {hideHumanChanges ? 'hidden' : 'visible'}.
+          <p className="activity-note">Tracked changes will appear here.</p>
+          <p className="empty-state">
+            {visibleChanges.length === 0
+              ? 'Make a human edit or run the agent to see attributed revisions.'
+              : `${visibleChanges.length} visible tracked ${visibleChanges.length === 1 ? 'change' : 'changes'}.`}
           </p>
-          {changes.length === 0 ? (
-            <p className="empty-state">Make a human edit or run the agent to see attributed revisions.</p>
-          ) : (
-            <ol className="change-list">
-              {changes.map((change) => {
-                const isAgent = change.authorEmail === AGENT.email;
-                return (
-                  <li key={change.id}>
-                    <div className="change-title">
-                      <span className={isAgent ? 'badge agent' : 'badge human'}>{isAgent ? 'Agent' : 'Human'}</span>
-                      <strong>{change.author ?? 'Unknown author'}</strong>
-                    </div>
-                    <p>{change.excerpt || '(No text excerpt)'}</p>
-                    <small>
-                      {change.type} · {change.date ? new Date(change.date).toLocaleString() : 'No timestamp'}
-                    </small>
-                  </li>
-                );
-              })}
-            </ol>
-          )}
         </aside>
       </section>
 
