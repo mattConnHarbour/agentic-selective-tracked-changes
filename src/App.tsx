@@ -25,6 +25,7 @@ export default function App() {
   const [humanConnected, setHumanConnected] = useState(false);
   const [agentReady, setAgentReady] = useState(false);
   const [running, setRunning] = useState(false);
+  const [hideHumanChanges, setHideHumanChanges] = useState(true);
   const [changes, setChanges] = useState<ChangeItem[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -147,18 +148,27 @@ export default function App() {
           <h1>Invisible human revisions, visible agent suggestions</h1>
           <p className="subtitle">
             Type in the document as {HUMAN.name}. Your revisions remain tracked but look like direct edits. Then ask the
-            dummy agent to append a visibly tracked suggestion.
+            dummy agent to insert a visibly tracked suggestion at the top of the document.
           </p>
         </div>
-        <button disabled={!agentReady || running} onClick={() => void runAgent()} type="button">
-          {running ? 'Agent is editing…' : 'Run dummy agent'}
-        </button>
+        <div className="header-actions">
+          <button
+            className="secondary-button"
+            onClick={() => setHideHumanChanges((hidden) => !hidden)}
+            type="button"
+          >
+            {hideHumanChanges ? 'Show human changes' : 'Hide human changes'}
+          </button>
+          <button disabled={!agentReady || running} onClick={() => void runAgent()} type="button">
+            {running ? 'Agent is editing…' : 'Run dummy agent'}
+          </button>
+        </div>
       </header>
 
       {error ? <div className="error-banner">{error}</div> : null}
 
       <section className="workspace">
-        <div className="editor-panel human-editor">
+        <div className={`editor-panel human-editor${hideHumanChanges ? ' hide-human-changes' : ''}`}>
           <div className="panel-heading">
             <strong>Shared document</strong>
             <span>{humanReady ? 'Human connected' : 'Connecting…'}</span>
@@ -185,7 +195,9 @@ export default function App() {
               Refresh
             </button>
           </div>
-          <p className="activity-note">Both kinds are stored. Only agent revisions use the standard review rendering.</p>
+          <p className="activity-note">
+            Both kinds are stored. Human revision markup is currently {hideHumanChanges ? 'hidden' : 'visible'}.
+          </p>
           {changes.length === 0 ? (
             <p className="empty-state">Make a human edit or run the agent to see attributed revisions.</p>
           ) : (

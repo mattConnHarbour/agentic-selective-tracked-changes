@@ -49,11 +49,11 @@ window.addEventListener('message', async (event) => {
     const doc = superdoc.activeEditor?.doc;
     if (!doc) throw new Error('The agent document API is not ready.');
     const paragraphs = await doc.find({ select: { type: 'node', nodeType: 'paragraph' }, limit: 250 });
-    const target = paragraphs.items.at(-1)?.address;
+    const target = paragraphs.items.at(0)?.address;
     if (!target || target.kind !== 'block') throw new Error('The agent could not find a paragraph insertion point.');
     const receipt = await doc.create.paragraph(
       {
-        at: { kind: 'after', target },
+        at: { kind: 'before', target },
         text: 'Agent suggestion: add a 30-day written notice requirement before termination.',
       },
       { changeMode: 'tracked' },

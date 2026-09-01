@@ -67,6 +67,18 @@ button:disabled {
   line-height: 1.5;
 }
 
+.header-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 10px;
+}
+
+.secondary-button {
+  border: 1px solid #91b6ff;
+  color: #dbe7ff;
+  background: transparent;
+}
+
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 350px;
@@ -193,7 +205,7 @@ button:disabled {
  * human text revisions look like final/direct edits. Agent revisions are not
  * matched and therefore retain the standard review markup.
  */
-.human-editor
+.human-editor.hide-human-changes
   .superdoc-layout
   .track-insert-dec.highlighted[data-track-change-author-email='human@example.com'] {
   border: 0 !important;
@@ -202,13 +214,13 @@ button:disabled {
   text-decoration: none !important;
 }
 
-.human-editor
+.human-editor.hide-human-changes
   .superdoc-layout
   .track-delete-dec.highlighted[data-track-change-author-email='human@example.com'] {
   display: none !important;
 }
 
-.human-editor
+.human-editor.hide-human-changes
   .superdoc-layout
   .track-format-dec.highlighted[data-track-change-author-email='human@example.com'] {
   border: 0 !important;
@@ -219,15 +231,15 @@ button:disabled {
  * bubble from flashing while App.tsx resolves its author. The demo then
  * reveals only agent-authored bubbles. This intentionally hides ordinary
  * comment bubbles too; use a custom comments UI when those must remain. */
-.human-editor .comment-placeholder {
+.human-editor.hide-human-changes .comment-placeholder {
   visibility: hidden !important;
 }
 
-.human-editor .comment-placeholder[data-track-change-author-email='agent@example.com'] {
+.human-editor.hide-human-changes .comment-placeholder[data-track-change-author-email='agent@example.com'] {
   visibility: visible !important;
 }
 
-.human-editor .comment-placeholder[data-track-change-author-email='human@example.com'] {
+.human-editor.hide-human-changes .comment-placeholder[data-track-change-author-email='human@example.com'] {
   display: none !important;
 }
 
@@ -235,6 +247,10 @@ button:disabled {
   .demo-header {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .header-actions {
+    flex-wrap: wrap;
   }
 
   .workspace {
