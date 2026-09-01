@@ -8,6 +8,18 @@ const AGENT = { name: 'Contract Review Agent', email: 'agent@example.com' };
 const MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const HUMAN_UI = { comments: false } as const;
 
+const resolveRoom = () => {
+  const url = new URL(window.location.href);
+  const existingRoomId = url.searchParams.get('room');
+  const id = existingRoomId ?? `agentic-selective-track-changes-${crypto.randomUUID()}`;
+  url.searchParams.delete('fresh');
+  url.searchParams.set('room', id);
+  window.history.replaceState({}, '', url);
+  return { id, mode: existingRoomId ? ('join' as const) : ('create' as const) };
+};
+
+const ROOM = resolveRoom();
+
 type ChangeItem = TrackChangeInfo;
 const isHumanChange = (change: ChangeItem) =>
   change.authorEmail === HUMAN.email || change.author === HUMAN.name;
@@ -18,7 +30,6 @@ export default function App() {
   const editorRef = useRef<SuperDocEditorCreateEvent['editor'] | null>(null);
   const agentFrameRef = useRef<HTMLIFrameElement>(null);
   const bubbleLayerRef = useRef<HTMLDivElement>(null);
-  const roomIdRef = useRef(`agentic-selective-track-changes-${crypto.randomUUID()}`);
   const [source, setSource] = useState<Blob | null>(null);
   const [humanReady, setHumanReady] = useState(false);
   const [humanConnected, setHumanConnected] = useState(false);
@@ -55,9 +66,9 @@ export default function App() {
               data: source,
               v2Collaboration: {
                 providerType: 'hocuspocus' as const,
-                documentId: roomIdRef.current,
+                documentId: ROOM.id,
                 serverUrl: 'ws://127.0.0.1:1245',
-                roomMode: 'create' as const,
+                roomMode: ROOM.mode,
               },
             },
           ]
@@ -222,8 +233,10 @@ export default function App() {
             <strong>Shared document</strong>
             <div className="mode-control">
               <div className="mode-key">
-                <span>editing = suggesting, user changes hidden, agent changes visible</span>
-                <span>suggesting = suggesting, user changes visible, agent changes visible</span>
+                <span>
+                  {hideHumanChanges ? 'Only agent changes are visible.' : 'Both user and agent changes are visible.'}
+                </span>
+                <span>Both user and agent changes are tracked.</span>
               </div>
               <label className="mode-selector">
                 <span>Mode</span>
@@ -299,7 +312,7 @@ export default function App() {
         <iframe
           className="agent-runtime"
           ref={agentFrameRef}
-          src={`/agent.html?room=${encodeURIComponent(roomIdRef.current)}`}
+          src={`/agent.html?room=${encodeURIComponent(ROOM.id)}`}
           title="Dummy agent runtime"
         />
       ) : null}
