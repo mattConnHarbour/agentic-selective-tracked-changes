@@ -139,7 +139,7 @@ button:disabled {
 .panel-heading span,
 .activity-note,
 .empty-state,
-.custom-change-bubble small {
+.custom-tracked-change-bubble small {
   color: #68758a;
 }
 
@@ -177,13 +177,13 @@ button:disabled {
   pointer-events: none;
 }
 
-.change-title {
+.tracked-change-title {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.custom-change-bubble {
+.custom-tracked-change-bubble {
   position: absolute;
   right: 16px;
   left: 16px;
@@ -202,7 +202,7 @@ button:disabled {
   pointer-events: auto;
 }
 
-.custom-change-bubble:hover {
+.custom-tracked-change-bubble:hover {
   border-color: #91b6ff;
   border-left-color: #225bd6;
   background: #f8faff;
@@ -245,24 +245,12 @@ button:disabled {
   padding: 40px;
 }
 
-.agent-runtime {
-  position: fixed;
-  top: -10000px;
-  left: -10000px;
-  width: 1000px;
-  height: 1000px;
-  pointer-events: none;
-  border: 0;
-}
-
 /*
- * Proof-of-concept selective projection.
- * SuperDoc's supported tracked-change mode is document-wide. Review mode keeps
- * every revision available, while these author-scoped painter attributes make
- * human text revisions look like final/direct edits. Agent revisions are not
- * matched and therefore retain the standard review markup.
+ * The TrackedChangesController toggles these semantic classes on the editor
+ * host. The stylesheet owns presentation; the controller does not inject or
+ * directly apply styles to SuperDoc's painted nodes.
  */
-.human-editor.hide-human-changes
+.tracked-changes-controller.hide-human-tracked-changes
   .superdoc-layout
   .track-insert-dec.highlighted[data-track-change-author-email='human@example.com'] {
   border: 0 !important;
@@ -271,13 +259,13 @@ button:disabled {
   text-decoration: none !important;
 }
 
-.human-editor.hide-human-changes
+.tracked-changes-controller.hide-human-tracked-changes
   .superdoc-layout
   .track-delete-dec.highlighted[data-track-change-author-email='human@example.com'] {
   display: none !important;
 }
 
-.human-editor.hide-human-changes
+.tracked-changes-controller.hide-human-tracked-changes
   .superdoc-layout
   .track-format-dec.highlighted[data-track-change-author-email='human@example.com'] {
   border: 0 !important;

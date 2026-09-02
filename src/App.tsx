@@ -1,12 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { SuperDocEditor, type SuperDocEditorCreateEvent, type SuperDocRef } from '@superdoc/react';
-import type { TrackChangeInfo } from 'superdoc/ui';
-import '@superdoc/react/style.css';
+import { HocuspocusProvider } from '@hocuspocus/provider';
+import { SuperDoc, type Editor } from 'superdoc';
+import { createSuperDocUI, type SuperDocUI, type TrackChangeInfo } from 'superdoc/ui';
+import * as Y from 'yjs';
+import 'superdoc/style.css';
+import { TrackedChangesController } from './TrackedChangesController';
 
 const HUMAN = { name: 'Human Editor', email: 'human@example.com' };
-const AGENT = { name: 'Contract Review Agent', email: 'agent@example.com' };
 const MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-const HUMAN_UI = { comments: false } as const;
+const BACKEND_HTTP_URL = (import.meta.env.VITE_BACKEND_URL ?? 'http://127.0.0.1:1245').replace(/\/$/, '');
+const BACKEND_WS_URL = BACKEND_HTTP_URL.replace(/^http/, 'ws');
+
+const hasSuperDocContent = (ydoc: Y.Doc) =>
+  ydoc.getXmlFragment('supereditor').length > 0 ||
+  ydoc.getMap('parts').size > 0 ||
+  ydoc.getMap('meta').has('docx');
 
 const resolveRoom = () => {
   const url = new URL(window.location.href);
@@ -15,137 +23,160 @@ const resolveRoom = () => {
   url.searchParams.delete('fresh');
   url.searchParams.set('room', id);
   window.history.replaceState({}, '', url);
-  return { id, mode: existingRoomId ? ('join' as const) : ('create' as const) };
+  return { id };
 };
 
 const ROOM = resolveRoom();
 
-type ChangeItem = TrackChangeInfo;
-const isHumanChange = (change: ChangeItem) =>
-  change.authorEmail === HUMAN.email || change.author === HUMAN.name;
-const isAgentChange = (change: ChangeItem) => !isHumanChange(change);
-
 export default function App() {
-  const humanRef = useRef<SuperDocRef>(null);
-  const editorRef = useRef<SuperDocEditorCreateEvent['editor'] | null>(null);
-  const agentFrameRef = useRef<HTMLIFrameElement>(null);
+  const editorHostRef = useRef<HTMLDivElement>(null);
+  const superdocRef = useRef<SuperDoc | null>(null);
+  const editorRef = useRef<Editor | null>(null);
+  const uiRef = useRef<SuperDocUI | null>(null);
+  const trackedChangesControllerRef = useRef<TrackedChangesController | null>(null);
   const bubbleLayerRef = useRef<HTMLDivElement>(null);
-  const [source, setSource] = useState<Blob | null>(null);
+  const [roomMode, setRoomMode] = useState<'create' | 'join' | null>(null);
   const [humanReady, setHumanReady] = useState(false);
   const [humanConnected, setHumanConnected] = useState(false);
-  const [agentReady, setAgentReady] = useState(false);
   const [running, setRunning] = useState(false);
-  const [hideHumanChanges, setHideHumanChanges] = useState(true);
-  const [changes, setChanges] = useState<ChangeItem[]>([]);
-  const [bubblePositions, setBubblePositions] = useState<Record<string, number>>({});
+  const [hideHumanTrackedChanges, setHideHumanTrackedChanges] = useState(true);
+  const [trackedChanges, setTrackedChanges] = useState<TrackChangeInfo[]>([]);
+  const [trackedChangeBubblePositions, setTrackedChangeBubblePositions] = useState<Record<string, number>>({});
   const [bubbleGeometryReady, setBubbleGeometryReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const visibleChanges = useMemo(
-    () => (hideHumanChanges ? changes.filter((change) => !isHumanChange(change)) : changes),
-    [changes, hideHumanChanges],
+  // The controller owns attribution and filtering. This projection is used by
+  // both the custom bubbles and the tracked-change activity count.
+  const visibleTrackedChanges = useMemo(
+    () =>
+      trackedChangesControllerRef.current?.filterVisibleTrackedChanges(
+        trackedChanges,
+        hideHumanTrackedChanges,
+      ) ?? [],
+    [hideHumanTrackedChanges, trackedChanges],
   );
 
   useEffect(() => {
-    void fetch('/sample.docx')
-      .then((response) => {
-        if (!response.ok) throw new Error(`Sample document returned ${response.status}.`);
-        return response.blob();
+    void fetch(`${BACKEND_HTTP_URL}/rooms/${encodeURIComponent(ROOM.id)}`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`Room lookup returned ${response.status}.`);
+        return (await response.json()) as { exists: boolean };
       })
-      .then(setSource)
+      .then(({ exists }) => setRoomMode(exists ? 'join' : 'create'))
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)));
   }, []);
 
-  const humanDocuments = useMemo(
-    () =>
-      source
-        ? [
-            {
-              id: 'human-document',
-              type: MIME,
-              data: source,
-              v2Collaboration: {
-                providerType: 'hocuspocus' as const,
-                documentId: ROOM.id,
-                serverUrl: 'ws://127.0.0.1:1245',
-                roomMode: ROOM.mode,
-              },
-            },
-          ]
-        : [],
-    [source],
-  );
-  const refreshChanges = useCallback(async () => {
+  const refreshTrackedChanges = useCallback(async () => {
     try {
-      const result = await editorRef.current?.doc?.trackChanges.list({
-        limit: 250,
-        offset: 0,
-      });
-      const items = ((result?.items ?? []) as ChangeItem[]).sort(
-        (left, right) => new Date(right.date ?? 0).getTime() - new Date(left.date ?? 0).getTime(),
-      );
-      setChanges(items);
+      const controller = trackedChangesControllerRef.current;
+      if (!controller) return;
+      setTrackedChanges(await controller.getTrackedChanges());
     } catch {
-      // Updates can race a document-session handoff during collaboration startup.
+      // Updates can race editor initialization or an in-flight mutation.
     }
   }, []);
 
   useEffect(() => {
-    if (!source || humanReady || !humanConnected) return;
-    const interval = window.setInterval(() => {
-      const instance = humanRef.current?.getInstance();
-      const editor = instance?.activeEditor;
-      if (!editor?.doc) return;
-      editorRef.current = editor;
-      setHumanReady(true);
-      window.clearInterval(interval);
-      void refreshChanges();
-    }, 250);
-    return () => window.clearInterval(interval);
-  }, [humanConnected, humanReady, refreshChanges, source]);
+    if (!roomMode || !editorHostRef.current) return;
 
-  useEffect(() => {
-    if (!humanReady) return;
-    const ui = humanRef.current?.getInstance()?.ui;
-    if (!ui) return;
-
-    return ui.trackChanges.observe((snapshot) => {
-      setChanges(
-        [...snapshot.items].sort(
-          (left, right) => new Date(right.date ?? 0).getTime() - new Date(left.date ?? 0).getTime(),
-        ),
-      );
+    const ydoc = new Y.Doc();
+    const provider = new HocuspocusProvider({
+      url: `${BACKEND_WS_URL}/collaboration`,
+      name: ROOM.id,
+      document: ydoc,
     });
-  }, [humanReady]);
+    let superdoc: SuperDoc | null = null;
+    let ui: SuperDocUI | null = null;
+    let stopTrackedChanges: (() => void) | null = null;
+
+    const handleStatus = ({ status }: { status: string }) => {
+      setHumanConnected(status === 'connected');
+    };
+    const handleSynced = () => {
+      if (superdoc || !editorHostRef.current) return;
+      const shouldSeedDefaultDocument = !hasSuperDocContent(ydoc);
+      superdoc = new SuperDoc({
+        selector: editorHostRef.current,
+        documentMode: 'suggesting',
+        document: shouldSeedDefaultDocument
+          ? {
+              id: ROOM.id,
+              type: MIME,
+              url: '/sample.docx',
+              name: 'sample.docx',
+              isNewFile: true,
+            }
+          : undefined,
+        user: HUMAN,
+        modules: {
+          // Disable SuperDoc's native comment/track-change bubbles because they
+          // cannot be filtered by author. The demo renders filterable bubbles below.
+          comments: false,
+          collaboration: { ydoc, provider },
+        },
+        onEditorCreate: ({ editor }) => {
+          editorRef.current = editor;
+        },
+        onReady: ({ superdoc: readySuperdoc }) => {
+          if (!editorRef.current) editorRef.current = readySuperdoc.activeEditor;
+          if (!editorRef.current || !editorHostRef.current) return;
+          const trackedChangesController = new TrackedChangesController({
+            editor: editorRef.current,
+            editorHost: editorHostRef.current,
+            human: HUMAN,
+          });
+          trackedChangesController.setHumanTrackedChangesVisible(!hideHumanTrackedChanges);
+          trackedChangesControllerRef.current = trackedChangesController;
+          ui = createSuperDocUI({ superdoc: readySuperdoc });
+          uiRef.current = ui;
+          stopTrackedChanges = ui.trackChanges.observe(() => void refreshTrackedChanges());
+          setHumanReady(true);
+          void refreshTrackedChanges();
+        },
+        onEditorUpdate: () => window.setTimeout(() => void refreshTrackedChanges(), 100),
+        onException: (payload) => {
+          if ('diagnosticCode' in payload) return;
+          const reason = 'error' in payload ? payload.error : payload;
+          setError(reason instanceof Error ? reason.message : String(reason));
+        },
+      });
+      superdocRef.current = superdoc;
+    };
+
+    provider.on('status', handleStatus);
+    provider.on('synced', handleSynced);
+    return () => {
+      provider.off('status', handleStatus);
+      provider.off('synced', handleSynced);
+      stopTrackedChanges?.();
+      ui?.destroy();
+      trackedChangesControllerRef.current?.destroy();
+      superdoc?.destroy();
+      provider.destroy();
+      ydoc.destroy();
+      superdocRef.current = null;
+      editorRef.current = null;
+      uiRef.current = null;
+      trackedChangesControllerRef.current = null;
+      setHumanReady(false);
+      setHumanConnected(false);
+    };
+  }, [refreshTrackedChanges, roomMode]);
 
   const positionBubbles = useCallback(() => {
     const layer = bubbleLayerRef.current;
-    const ui = humanRef.current?.getInstance()?.ui;
+    const ui = uiRef.current;
     if (!layer || !ui) return;
 
     const layerBounds = layer.getBoundingClientRect();
-    const paintedChanges = Array.from(
-      document.querySelectorAll<HTMLElement>(
-        '.human-editor [data-track-change-id], .human-editor [data-track-change-preferred-target-id]',
-      ),
-    );
-    const anchored = visibleChanges.flatMap((change) => {
+    const anchored = visibleTrackedChanges.flatMap((trackedChange) => {
       try {
-        const apiRects = ui.viewport.getRect({ target: change.address }).rects;
-        const paintedRects = paintedChanges
-          .filter((element) => {
-            const ids = element.dataset.trackChangeIds?.split(',') ?? [];
-            return (
-              element.dataset.trackChangeId === change.id ||
-              element.dataset.trackChangePreferredTargetId === change.id ||
-              ids.includes(change.id)
-            );
-          })
-          .map((element) => element.getBoundingClientRect());
-        const rect = [...apiRects, ...paintedRects].find(
-          (candidate) => candidate.bottom >= 0 && candidate.top <= window.innerHeight,
+        const rectResult = ui.viewport.getRect({ target: trackedChange.address });
+        if (!rectResult.success) return [];
+        const rect = rectResult.rects.find(
+          (candidate) => candidate.top + candidate.height >= 0 && candidate.top <= window.innerHeight,
         );
-        return rect ? [{ id: change.id, top: rect.top - layerBounds.top }] : [];
+        return rect ? [{ id: trackedChange.id, top: rect.top - layerBounds.top }] : [];
       } catch {
         return [];
       }
@@ -153,13 +184,13 @@ export default function App() {
     const nextPositions = Object.fromEntries(
       anchored.map(({ id, top }) => [id, top]),
     );
-    setBubblePositions(nextPositions);
+    setTrackedChangeBubblePositions(nextPositions);
     setBubbleGeometryReady(true);
-  }, [visibleChanges]);
+  }, [visibleTrackedChanges]);
 
   useEffect(() => {
     if (!humanReady) return;
-    const ui = humanRef.current?.getInstance()?.ui;
+    const ui = uiRef.current;
     if (!ui) return;
 
     const frame = window.requestAnimationFrame(positionBubbles);
@@ -174,52 +205,40 @@ export default function App() {
     };
   }, [humanReady, positionBubbles]);
 
-  useEffect(() => {
-    const onAgentMessage = (event: MessageEvent) => {
-      if (event.origin !== window.location.origin || event.data?.source !== 'superdoc-agent-demo') return;
-      if (event.data.type === 'agent-ready') setAgentReady(true);
-      if (event.data.type === 'agent-complete') {
-        setRunning(false);
-        [250, 750, 1500, 3000].forEach((delay) => {
-          window.setTimeout(() => void refreshChanges(), delay);
-        });
-      }
-      if (event.data.type === 'agent-error') {
-        setRunning(false);
-        setError(event.data.detail || 'The dummy agent failed.');
-      }
-    };
-    window.addEventListener('message', onAgentMessage);
-    return () => window.removeEventListener('message', onAgentMessage);
-  }, [refreshChanges]);
-
   const runAgent = async () => {
     setRunning(true);
     setError(null);
-    if (!agentFrameRef.current?.contentWindow) {
+    try {
+      const response = await fetch(`${BACKEND_HTTP_URL}/agent/edit`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ room: ROOM.id }),
+      });
+      const result = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(result.error ?? `The agent returned ${response.status}.`);
+      [100, 300, 750, 1500].forEach((delay) => {
+        window.setTimeout(() => void refreshTrackedChanges(), delay);
+      });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
       setRunning(false);
-      setError('The agent client is not ready.');
-      return;
     }
-    agentFrameRef.current.contentWindow.postMessage(
-      { source: 'superdoc-agent-demo', type: 'run-agent' },
-      window.location.origin,
-    );
   };
 
-  const focusChange = async (id: string) => {
-    const ui = humanRef.current?.getInstance()?.ui;
+  const focusTrackedChange = async (id: string) => {
+    const ui = uiRef.current;
     if (!ui || !ui.trackChanges.setActive(id)) return;
     await ui.trackChanges.scrollTo(id);
   };
 
-  if (error && !source) return <p className="fatal">Could not start the demo: {error}</p>;
-  if (!source) return <p className="loading">Loading sample document…</p>;
+  if (error && !roomMode) return <p className="fatal">Could not start the demo: {error}</p>;
+  if (!roomMode) return <p className="loading">Loading sample document…</p>;
   return (
     <main className="app-shell">
       <header className="demo-header">
         <div className="header-actions">
-          <button disabled={!agentReady || running} onClick={() => void runAgent()} type="button">
+          <button disabled={!humanReady || !humanConnected || running} onClick={() => void runAgent()} type="button">
             {running ? 'Agent is editing…' : 'Run agent edit'}
           </button>
         </div>
@@ -228,22 +247,34 @@ export default function App() {
       {error ? <div className="error-banner">{error}</div> : null}
 
       <section className="workspace">
-        <div className={`editor-panel human-editor${hideHumanChanges ? ' hide-human-changes' : ''}`}>
+        <div className="editor-panel human-editor">
           <div className="panel-heading">
             <strong>Shared document</strong>
             <div className="mode-control">
               <div className="mode-key">
                 <span>
-                  {hideHumanChanges ? 'Only agent changes are visible.' : 'Both user and agent changes are visible.'}
+                  {hideHumanTrackedChanges
+                    ? 'Only agent tracked changes are visible.'
+                    : 'Both user and agent tracked changes are visible.'}
                 </span>
-                <span>Both user and agent changes are tracked.</span>
+                <span>Both user and agent tracked changes are recorded.</span>
               </div>
               <label className="mode-selector">
                 <span>Mode</span>
+                {/*
+                  One toggle controls both projections: the author-scoped
+                  inline markup class and the custom bubble collection.
+                */}
                 <select
                   aria-label="Document display mode"
-                  onChange={(event) => setHideHumanChanges(event.target.value === 'editing')}
-                  value={hideHumanChanges ? 'editing' : 'suggesting'}
+                  onChange={(event) => {
+                    const hideHumanTrackedChanges = event.target.value === 'editing';
+                    setHideHumanTrackedChanges(hideHumanTrackedChanges);
+                    trackedChangesControllerRef.current?.setHumanTrackedChangesVisible(
+                      !hideHumanTrackedChanges,
+                    );
+                  }}
+                  value={hideHumanTrackedChanges ? 'editing' : 'suggesting'}
                 >
                   <option value="editing">Editing</option>
                   <option value="suggesting">Suggesting</option>
@@ -251,40 +282,30 @@ export default function App() {
               </label>
             </div>
           </div>
-          <SuperDocEditor
-            documentMode="suggesting"
-            documents={humanDocuments}
-            hideToolbar
-            onCollaborationReady={() => setHumanConnected(true)}
-            onEditorUpdate={() => window.setTimeout(() => void refreshChanges(), 100)}
-            onException={(payload) => {
-              if ('diagnosticCode' in payload) return;
-              setError(payload.error instanceof Error ? payload.error.message : String(payload.error));
-            }}
-            ref={humanRef}
-            ui={HUMAN_UI}
-            user={HUMAN}
-          />
+          <div className="superdoc-host" ref={editorHostRef} />
           <div className="bubble-layer" ref={bubbleLayerRef}>
-            {visibleChanges.map((change, index) => {
-              const top = bubblePositions[change.id];
+            {/* Only the already-filtered tracked changes receive custom bubbles. */}
+            {visibleTrackedChanges.map((trackedChange, index) => {
+              const top = trackedChangeBubblePositions[trackedChange.id];
               if (top === undefined && bubbleGeometryReady) return null;
-              const isAgent = isAgentChange(change);
+              const isAgent =
+                !trackedChangesControllerRef.current?.isHumanTrackedChange(trackedChange);
               return (
                 <button
-                  className="custom-change-bubble"
-                  key={change.id}
-                  onClick={() => void focusChange(change.id)}
+                  className="custom-tracked-change-bubble"
+                  key={trackedChange.id}
+                  onClick={() => void focusTrackedChange(trackedChange.id)}
                   style={{ top: top ?? 132 + index * 132 }}
                   type="button"
                 >
-                  <span className="change-title">
+                  <span className="tracked-change-title">
                     <span className={isAgent ? 'badge agent' : 'badge human'}>{isAgent ? 'Agent' : 'Human'}</span>
-                    <strong>{change.author ?? 'Unknown author'}</strong>
+                    <strong>{trackedChange.author ?? 'Unknown author'}</strong>
                   </span>
-                  <span className="bubble-excerpt">{change.excerpt || '(No text excerpt)'}</span>
+                  <span className="bubble-excerpt">{trackedChange.excerpt || '(No text excerpt)'}</span>
                   <small>
-                    {change.type} · {change.date ? new Date(change.date).toLocaleString() : 'No timestamp'}
+                    {trackedChange.type} ·{' '}
+                    {trackedChange.date ? new Date(trackedChange.date).toLocaleString() : 'No timestamp'}
                   </small>
                 </button>
               );
@@ -295,27 +316,19 @@ export default function App() {
         <aside className="activity-panel">
           <div className="panel-heading">
             <strong>Tracked changes</strong>
-            <button className="text-button" onClick={() => void refreshChanges()} type="button">
+            <button className="text-button" onClick={() => void refreshTrackedChanges()} type="button">
               Refresh
             </button>
           </div>
           <p className="activity-note">Tracked changes will appear here.</p>
           <p className="empty-state">
-            {visibleChanges.length === 0
+            {visibleTrackedChanges.length === 0
               ? 'Make a human edit or run the agent to see attributed revisions.'
-              : `${visibleChanges.length} visible tracked ${visibleChanges.length === 1 ? 'change' : 'changes'}.`}
+              : `${visibleTrackedChanges.length} visible ${visibleTrackedChanges.length === 1 ? 'tracked change' : 'tracked changes'}.`}
           </p>
         </aside>
       </section>
 
-      {humanReady ? (
-        <iframe
-          className="agent-runtime"
-          ref={agentFrameRef}
-          src={`/agent.html?room=${encodeURIComponent(ROOM.id)}`}
-          title="Dummy agent runtime"
-        />
-      ) : null}
     </main>
   );
 }
